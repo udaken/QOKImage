@@ -1,21 +1,54 @@
-﻿using System;
-using System.Numerics;
+﻿//
+// QOKImage is ported version of QOI for C#
+// 
+
+/* ---- About original QOI ---- 
+
+QOI - The “Quite OK Image” format for fast, lossless image compression
+
+Dominic Szablewski - https://phoboslab.org
+
+
+-- LICENSE: The MIT License(MIT)
+
+Copyright(c) 2021 Dominic Szablewski
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files(the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and / or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so, subject to the following conditions :
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+*/
+
+using System;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
-using static System.Runtime.InteropServices.MemoryMarshal;
+using static System.Buffers.Binary.BinaryPrimitives;
 
 public static class QOKImage
 {
-    const int QOI_INDEX = 0x00000000;
-    const int QOI_RUN_8 = 0b01000000;
-    const int QOI_RUN_16 = 0b01100000;
-    const int QOI_DIFF_8 = 0b10000000;
-    const int QOI_DIFF_16 = 0b11000000;
-    const int QOI_DIFF_24 = 0b11100000;
-    const int QOI_COLOR = 0b11110000;
-    const int QOI_MASK_2 = 0b11000000;
-    const int QOI_MASK_3 = 0b11100000;
-    const int QOI_MASK_4 = 0b11110000;
+    const int QOI_INDEX = 0x0000_0000;
+    const int QOI_RUN_8 = 0b0100_0000;
+    const int QOI_RUN_16 = 0b0110_0000;
+    const int QOI_DIFF_8 = 0b1000_0000;
+    const int QOI_DIFF_16 = 0b1100_0000;
+    const int QOI_DIFF_24 = 0b1110_0000;
+    const int QOI_COLOR = 0b1111_0000;
+    const int QOI_MASK_2 = 0b1100_0000;
+    const int QOI_MASK_3 = 0b1110_0000;
+    const int QOI_MASK_4 = 0b1111_0000;
+    const uint QOI_MAGIC = ((uint)'q') << 24 | ((uint)'o') << 16 | ((uint)'i') << 8 | ((uint)'f') << 0;
+    const int QOI_HEADER_SIZE = 12;
 
     const int QOI_PADDING = 4;
 
@@ -39,69 +72,56 @@ public static class QOKImage
         }
     }
 
-    [StructLayout(LayoutKind.Sequential, Size = 4)]
-    struct qoi_magic_t
-    {
-        public byte chars0, chars1, chars2, chars3;
-        //unsigned int v;
-    }
-
-    [StructLayout(LayoutKind.Sequential, Pack = 2)]
-    struct qoi_header_t
-    {
-        public qoi_magic_t magic;
-        public ushort width;
-        public ushort height;
-        public uint size;
-    };
-    static readonly int HeaderSize = Unsafe.SizeOf<qoi_header_t>();
-
-    static ReadOnlySpan<byte> MagicBytes() => new byte[] { (byte)'q', (byte)'o', (byte)'i', (byte)'f' };
-    static ref readonly qoi_magic_t Magic() => ref AsRef<qoi_magic_t>(MagicBytes());
-
-    public static byte[] Encode(ReadOnlySpan<byte> pixels, int w, int h, int channels, out int out_len)
+    public static byte[] Encode(ReadOnlySpan<byte> pixels, int width, int height, int channels, out int out_len)
     {
         if (
-            w <= 0 || w > ushort.MaxValue ||
-            h <= 0 || h > ushort.MaxValue ||
-            channels < 3 || channels > 4
+            width <= 0 || width > ushort.MaxValue ||
+            height <= 0 || height > ushort.MaxValue ||
+            channels < 3 || channels > 4 ||
+            pixels.Length < width * height * channels
         )
         {
             throw new ArgumentException();
         }
 
-        int max_size = w * h * (channels + 1) + HeaderSize + QOI_PADDING;
-        int p = 0;
+        int max_size = width * height * (channels + 1) + QOI_HEADER_SIZE + QOI_PADDING;
         byte[] bytes = new byte[max_size];
-        var header = new qoi_header_t
-        {
-            magic = Magic(),
-            width = (ushort)w,
-            height = (ushort)h,
-            size = 0 // will be set at the end
-        };
-        Write(bytes, ref header);
-        p += HeaderSize;
 
+        Span<byte> header_pos = bytes;
+        WriteUInt32BigEndian(header_pos, QOI_MAGIC); // "qoif"
+        header_pos = header_pos.Slice(sizeof(uint));
+        WriteUInt16BigEndian(header_pos, (ushort)width);
+        header_pos = header_pos.Slice(sizeof(ushort));
+        WriteUInt16BigEndian(header_pos, (ushort)height);
+        header_pos = header_pos.Slice(sizeof(ushort));
+        WriteUInt32BigEndian(header_pos, 0); // size, will be set later
+
+        int p = EncodeChunk(pixels, channels, bytes.AsSpan(QOI_HEADER_SIZE));
+
+        WriteUInt32BigEndian(header_pos, (uint)p);
+        out_len = QOI_HEADER_SIZE + p;
+        return bytes;
+    }
+
+    private static int EncodeChunk(ReadOnlySpan<byte> pixels, int channels, Span<byte> bytes)
+    {
         Span<qoi_rgba_t> index = stackalloc qoi_rgba_t[64];
 
+        int p = 0;
         int run = 0;
         qoi_rgba_t px_prev = new() { rgba = { r = 0, g = 0, b = 0, a = Byte.MaxValue } };
         qoi_rgba_t px = px_prev;
 
-        int px_len = w * h * channels;
-        int px_end = px_len - channels;
-        for (int px_pos = 0; px_pos < px_len; px_pos += channels)
+        int px_end = pixels.Length - channels;
+        for (int px_pos = 0; px_pos < pixels.Length; px_pos += channels)
         {
             if (channels == 4)
             {
-                px = Read<qoi_rgba_t>(pixels.Slice(px_pos));
+                px = MemoryMarshal.Read<qoi_rgba_t>(pixels.Slice(px_pos));
             }
             else
             {
-                px.rgba.r = pixels[px_pos + 0];
-                px.rgba.g = pixels[px_pos + 1];
-                px.rgba.b = pixels[px_pos + 2];
+                Unsafe.CopyBlock(ref px.rgba.r, ref Unsafe.AsRef(in pixels[px_pos]), 3);
             }
 
             if (px.v == px_prev.v)
@@ -183,50 +203,51 @@ public static class QOKImage
         }
 
         p += QOI_PADDING;
-
-        AsRef<qoi_header_t>(bytes).size = (uint)(p - HeaderSize);
-        out_len = p;
-        return bytes;
+        return p;
     }
-
-    static ReadOnlySpan<byte> AsBytes<T>(in T value) where T : unmanaged
-        => MemoryMarshal.AsBytes(CreateReadOnlySpan(ref Unsafe.AsRef(value), 1));
 
     public static byte[] Decode(ReadOnlySpan<byte> data, out int width, out int height, int channels)
     {
-        if (data.Length < HeaderSize)
+        if (channels < 3 || channels > 4 || data.Length < QOI_HEADER_SIZE)
         {
             throw new ArgumentOutOfRangeException(nameof(data));
         }
 
-        ref readonly qoi_header_t header = ref AsRef<qoi_header_t>(data);
+        var magic = ReadUInt32BigEndian(data.Slice(0));
+        width = ReadUInt16BigEndian(data.Slice(4));
+        height = ReadUInt16BigEndian(data.Slice(6));
+        var size = ReadUInt32BigEndian(data.Slice(8));
+
         if (
-            channels < 3 || channels > 4 ||
-            header.width == 0 || header.height == 0 ||
-            (int)header.size + HeaderSize != data.Length ||
-            !AsBytes(in header.magic).SequenceEqual(MagicBytes())
+            width == 0 || height == 0 ||
+            magic != QOI_MAGIC ||
+            (int)size + QOI_HEADER_SIZE != data.Length
         )
         {
             throw new ArgumentOutOfRangeException();
         }
 
-        int px_len = header.width * header.height * channels;
+        int px_len = width * height * channels;
+
+        ReadOnlySpan<byte> bytes = data.Slice(QOI_HEADER_SIZE);
+        return DecodeChunk(bytes, px_len, channels);
+    }
+
+    private static byte[] DecodeChunk(ReadOnlySpan<byte> bytes, int px_len, int channels)
+    {
         byte[] pixels = new byte[px_len];
-
-        ReadOnlySpan<byte> bytes = data.Slice(HeaderSize);
-
-        uint data_len = header.size - QOI_PADDING;
         qoi_rgba_t px = new() { rgba = { r = 0, g = 0, b = 0, a = Byte.MaxValue } };
         Span<qoi_rgba_t> index = stackalloc qoi_rgba_t[64];
+        int chunks_len = bytes.Length - QOI_PADDING;
 
         int run = 0;
-        for (int px_pos = 0, p = 0; px_pos < px_len; px_pos += channels)
+        for (int px_pos = 0, p = 0; px_pos < pixels.Length; px_pos += channels)
         {
             if (run > 0)
             {
                 run--;
             }
-            else if (p < data_len)
+            else if (p < chunks_len)
             {
                 int b1 = bytes[p++];
 
@@ -278,18 +299,13 @@ public static class QOKImage
 
             if (channels == 4)
             {
-                Write(pixels.AsSpan(px_pos), ref px);
+                Unsafe.WriteUnaligned(ref pixels[px_pos], px);
             }
             else
             {
-                pixels[px_pos + 0] = px.rgba.r;
-                pixels[px_pos + 1] = px.rgba.g;
-                pixels[px_pos + 2] = px.rgba.b;
+                Unsafe.CopyBlockUnaligned(ref pixels[px_pos], ref px.rgba.r, 3);
             }
         }
-
-        width = header.width;
-        height = header.height;
         return pixels;
     }
 }
