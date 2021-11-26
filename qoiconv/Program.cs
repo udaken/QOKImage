@@ -1,19 +1,22 @@
 ﻿using System;
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
 
-namespace qoiconv
+namespace qoiconv;
+
+internal class Program
 {
-    internal class Program
+    [STAThread]
+    unsafe static void Main(string[] args)
     {
-        [STAThread]
-        unsafe static void Main(string[] args)
+        var stopwatch = new Stopwatch();
+        stopwatch.Start();
+        var input = args[0];
+
+        for (int c = 0; c < 100; c++)
         {
-            var input = args[0];
-
-            for(int c = 0; c < 100;c++)
-
             if (Path.GetExtension(input) != ".qoi")
             {
                 var img = (Bitmap)Image.FromFile(input);
@@ -37,19 +40,16 @@ namespace qoiconv
                     bitmap.Save(Path.ChangeExtension(input, ".bmp"), ImageFormat.Bmp);
                 }
             }
-
-
-
-            static int GetChannel(PixelFormat pixelFormat) => pixelFormat switch
-            {
-                PixelFormat.Format32bppArgb => 4,
-                PixelFormat.Format32bppRgb => 4,
-                PixelFormat.Format32bppPArgb => 4,
-                PixelFormat.Format24bppRgb => 3,
-                _ => throw new ArgumentOutOfRangeException(nameof(pixelFormat)),
-            };
         }
+        Console.WriteLine($"Elapsed: {stopwatch.Elapsed}");
 
-
+        static int GetChannel(PixelFormat pixelFormat) => pixelFormat switch
+        {
+            PixelFormat.Format32bppArgb => 4,
+            PixelFormat.Format32bppRgb => 4,
+            PixelFormat.Format32bppPArgb => 4,
+            PixelFormat.Format24bppRgb => 3,
+            _ => throw new ArgumentOutOfRangeException(nameof(pixelFormat)),
+        };
     }
 }
