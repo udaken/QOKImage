@@ -1,0 +1,14 @@
+{
+  "profiles": {
+    "qoiconv": {
+      "commandName": "Project",
+      "commandLineArgs": "testdata/wallpaper/1492858.png",
+      "workingDirectory": "."
+    },
+    "プロファイル 1": {
+      "commandName": "Project",
+      "commandLineArgs": "testdata/wallpaper/1492858.qoi",
+      "workingDirectory": "."
+    }
+  }
+}
