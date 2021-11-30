@@ -68,11 +68,15 @@ public static class QOKImage
         public readonly uint v
         {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
+#if NETSTANDARD2_0
             get => (uint)rgba.r << 24 | (uint)rgba.g << 16 | (uint)rgba.b << 8 | rgba.a;
+#else
+            get => Unsafe.As<Rgba, uint>(ref Unsafe.AsRef(in rgba));
+#endif
         }
     }
 
-    public static byte[] Encode(ReadOnlySpan<byte> pixels, int width, int height, int channels, out int out_len)
+public static byte[] Encode(ReadOnlySpan<byte> pixels, int width, int height, int channels, out int out_len)
     {
         if (
             width <= 0 || width > ushort.MaxValue ||

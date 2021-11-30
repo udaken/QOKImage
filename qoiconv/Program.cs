@@ -15,30 +15,27 @@ internal class Program
         stopwatch.Start();
         var input = args[0];
 
-        for (int c = 0; c < 100; c++)
+        if (Path.GetExtension(input) != ".qoi")
         {
-            if (Path.GetExtension(input) != ".qoi")
+            var img = (Bitmap)Image.FromFile(input);
+            var bitmapData = img.LockBits(new Rectangle(0, 0, img.Width, img.Height), System.Drawing.Imaging.ImageLockMode.ReadOnly, img.PixelFormat);
+
+            var data = QOKImage.Encode(new ReadOnlySpan<byte>((void*)bitmapData.Scan0, bitmapData.Stride * bitmapData.Height),
+                bitmapData.Width, bitmapData.Height, GetChannel(bitmapData.PixelFormat), out var len);
+            img.UnlockBits(bitmapData);
+
+            using var stream = File.OpenWrite(Path.ChangeExtension(input, ".qoi"));
+            stream.Write(data, 0, len);
+        }
+        else
+        {
+            var bytes = File.ReadAllBytes(input);
+            var pixels = QOKImage.Decode(bytes, out var width, out var height, 4);
+
+            fixed (byte* dst = pixels)
             {
-                var img = (Bitmap)Image.FromFile(input);
-                var bitmapData = img.LockBits(new Rectangle(0, 0, img.Width, img.Height), System.Drawing.Imaging.ImageLockMode.ReadOnly, img.PixelFormat);
-
-                var data = QOKImage.Encode(new ReadOnlySpan<byte>((void*)bitmapData.Scan0, bitmapData.Stride * bitmapData.Height),
-                    bitmapData.Width, bitmapData.Height, GetChannel(bitmapData.PixelFormat), out var len);
-                img.UnlockBits(bitmapData);
-
-                using var stream = File.OpenWrite(Path.ChangeExtension(input, ".qoi"));
-                stream.Write(data, 0, len);
-            }
-            else
-            {
-                var bytes = File.ReadAllBytes(input);
-                var pixels = QOKImage.Decode(bytes, out var width, out var height, 4);
-
-                fixed (byte* dst = pixels)
-                {
-                    var bitmap = new Bitmap(width, height, width * 4, PixelFormat.Format32bppArgb, (IntPtr)dst);
-                    bitmap.Save(Path.ChangeExtension(input, ".bmp"), ImageFormat.Bmp);
-                }
+                var bitmap = new Bitmap(width, height, width * 4, PixelFormat.Format32bppArgb, (IntPtr)dst);
+                bitmap.Save(Path.ChangeExtension(input, ".bmp"), ImageFormat.Bmp);
             }
         }
         Console.WriteLine($"Elapsed: {stopwatch.Elapsed}");
